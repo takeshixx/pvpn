@@ -68,7 +68,9 @@ do_args() {
             -v|--version)
                 die "pvpn v. $VERSION";;
             -d|--debug)
-                set -x;;
+                set -x
+                SSH_ARGS="-v ${SSH_ARGS}"
+                ;;
             -t|--type)
                 case "$2" in
                     ppp)
