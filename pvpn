@@ -87,6 +87,9 @@ do_args() {
             -s|--first-ssh-hop)
                 ssh_ip="$(dig +short $2)"
                 shift;;
+            -l|--tun-devices)
+                tun_devices="$2"
+                shift;;
             -D|--inherit-dns)
                 inherit_dns=true;;
             -S|--stop)
@@ -138,7 +141,13 @@ connect_ppp() {
 
 
 connect_ssh_layer3() {
-    device_pair=$(available_devicepair "$ssh_host" "tun")
+    if [ -z "$tun_devices" ];then
+        device_pair=$(available_devicepair "$ssh_host" "tun")
+        devices="${client_device#tun}:${server_device#tun}"
+    else
+        device_pair="$tun_devices"
+        devices="$tun_devices"
+    fi
 
     client_ip="${ip_pair%:*}"
     server_ip="${ip_pair#*:}"
@@ -147,7 +156,7 @@ connect_ssh_layer3() {
     ssh ${SSH_ARGS} -TCf -oServerAliveInterval=55 \
              -oExitOnForwardFailure=yes \
              -oTunnel=point-to-point \
-             -w "${client_device#tun}:${server_device#tun}" "$ssh_host" "\
+             -w "${devices}" "$ssh_host" "\
      ip link set $server_device up; \
      ip addr add $server_ip/32 peer $client_ip dev $server_device;" || \
         die "ssh failed (exit code $?)"
