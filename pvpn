@@ -66,6 +66,12 @@ do_args() {
                 usage; exit 1;;
             -v|--version)
                 die "pvpn v. $VERSION";;
+            -b|--backbround)
+                BACKGROUND=1
+                ;;
+            -k|--keep-devices)
+                KEEP_DEVICES=1
+                ;;
             -d|--debug)
                 set -x
                 SSH_ARGS="-v ${SSH_ARGS}"
@@ -227,17 +233,27 @@ sudo ip addr add ${server_ip}/32 peer ${client_ip} dev ${server_device};"
 
 disconnect() {
     if [[ -z "$1" ]]; then
-        for filename in $(find "$STATE_DIR" -type f -name '[^.]*'); do
-            disconnect "$(basename "$filename")"
+        for filename in $(find "${STATE_DIR}" -type f -name '[^.]*'); do
+            disconnect "$(basename "${filename}")"
         done
         return
     fi
 
-    filename="$STATE_DIR/$1"
-    source "$filename"
-    eval $stop_cmd
-    rm "$filename"
-    echo "$1 disconnected"
+    filename="${STATE_DIR}/${1}"
+    source "${filename}"
+    sudo /bin/sh -c "${stop_cmd}"
+    
+    if [ "$KEEP_DEVICES" -eq 0 ];then
+        sudo ip link delete dev "$client_device"
+        if [ "$SUDO" -eq 1 ];then
+            ${ssh_cmd} sudo ip link delete dev "$server_device"
+        else
+            ${ssh_cmd} ip link delete dev "$server_device"
+        fi
+    fi
+    
+    rm "${filename}"
+    echo "${1} disconnected"
 }
 
 
@@ -365,5 +381,10 @@ do_args "$@"
 connect_$tunnel_type
 route "${ip_pair#*:}" "${routes[@]}"
 dns
+echo "${client_device} connected"
 write_statefile
-echo "$client_device connected"
+
+if [ "$BACKGROUND" -eq 0 ];then
+    trap exit_script EXIT TERM
+    read
+fi
