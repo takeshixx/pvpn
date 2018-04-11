@@ -6,11 +6,10 @@
 # See LICENSE
 
 VERSION=
-if [[ -d /run ]]; then
-    STATE_DIR=/run/pvpn
-else
-    STATE_DIR=/var/run/pvpn
-fi
+STATE_DIR=/tmp/pvpn
+SUDO=0
+BACKGROUND=0
+KEEP_DEVICES=0
 
 usage() {
     echo "Establish VPN through your run of the mill SSH server (with root SSH access)"
@@ -139,6 +138,36 @@ connect_ppp() {
     stop_cmd="kill $(< "/var/run/$client_device.pid")"
 }
 
+check_and_create_tun_interface_remote(){
+    check_and_create_tun_interface "$1" "yes"
+}
+
+check_and_create_tun_interface(){
+    interface="$1"
+    remote="$2"
+    check_cmd="ip tuntap 2>/dev/null | grep -q ${interface}"
+    address_flush_cmd="sudo ip address flush dev ${interface}"
+    route_flush_cmd="sudo ip route flush dev ${interface}"
+    create_tun_dev_cmd="sudo ip tuntap add dev ${interface} mode tun user $(id -un)"
+    
+    if [ -n "${remote}" ];then
+        check_cmd="${ssh_cmd} ${check_cmd}"
+        address_flush_cmd="${ssh_cmd} ${address_flush_cmd}"
+        route_flush_cmd="${ssh_cmd} ${route_flush_cmd}"
+        create_tun_dev_cmd="${ssh_cmd} sudo ip tuntap add dev ${interface} mode tun"
+    else
+        create_tun_dev_cmd="sudo ip tuntap add dev ${interface} mode tun user $(id -un)"
+    fi
+    
+    if eval "${check_cmd}";then
+        echo "tun interface ${interface} already exists. Press CTRL+C to abort and choose another device, RETURN to continue..."
+        read
+        eval "$address_flush_cmd" || die "Flushing addresses on ${interface} failed"
+        eval "$route_flush_cmd" || die "Flushing routes on ${interface} failed"
+    else
+        eval "$create_tun_dev_cmd" || die "Creating tun dev ${interface} failed"
+    fi
+}
 
 connect_ssh_layer3() {
     if [ -z "$tun_devices" ];then
@@ -152,14 +181,34 @@ connect_ssh_layer3() {
     client_ip="${ip_pair%:*}"
     server_ip="${ip_pair#*:}"
     client_device="${device_pair%:*}"
+    check_and_create_tun_interface "$client_device"
     server_device="${device_pair#*:}"
+    check_and_create_tun_interface_remote "$server_device"
+    
+    if [ "${client_device}" != "any" ];then
+        ssh_devices="${client_device#tun}:"
+    else
+        ssh_devices="any:"
+    fi
+    if [ "${server_device}" != "any" ];then
+        ssh_devices="${ssh_devices}${server_device#tun}"
+    else
+        ssh_devices="${ssh_devices}any"
+    fi
+    
+    if [ "$SUDO" -eq 0 ];then
+        remote_setup_cmd="ip link set ${server_device} up; \
+ip addr add ${server_ip}/32 peer ${client_ip} dev ${server_device};"
+    else
+        remote_setup_cmd="sudo ip link set ${server_device} up; \
+sudo ip addr add ${server_ip}/32 peer ${client_ip} dev ${server_device};"
+    fi
+    
     ssh ${SSH_ARGS} -TCf -oServerAliveInterval=55 \
-             -oExitOnForwardFailure=yes \
-             -oTunnel=point-to-point \
-             -w "${devices}" "$ssh_host" "\
-     ip link set $server_device up; \
-     ip addr add $server_ip/32 peer $client_ip dev $server_device;" || \
-        die "ssh failed (exit code $?)"
+        -oExitOnForwardFailure=yes \
+        -oTunnel=point-to-point \
+        -w "${ssh_devices}" "${ssh_host}" "${remote_setup_cmd}" || \
+            die "ssh failed (exit code ${?})"
 
     pid=$(ps ax -o"%p %a" | awk '$2 == "ssh" && /ip link set '$server_device' up/ {print $1}')
     stop_cmd="kill $pid"
@@ -169,9 +218,9 @@ connect_ssh_layer3() {
     # if we didn't get a tunnel up
     sleep 1
 
-    ip link set $client_device up || \
+    sudo ip link set $client_device up || \
         die "Failed to set $client_device up"
-    ip addr add $client_ip/32 peer $server_ip dev $client_device || \
+    sudo ip addr add $client_ip/32 peer $server_ip dev $client_device || \
         die "Failed to set $client_ip on $client_device"
 }
 
@@ -207,8 +256,8 @@ route() {
     if [[ -z "$ssh_ip" ]]; then
         echo "IP of the first SSH hop not found. Consider using the -s switch."
     else
-        echo "Routing $ssh_ip through current default gateway ($current_default)"
-        ip route add "$ssh_ip" via "$current_default"
+        echo "Routing $ssh_ip through current default gateway (${current_default})"
+        sudo ip route add "$ssh_ip" via "$current_default"
     fi
 
     while [[ "$#" -gt 0 ]]; do
@@ -216,9 +265,9 @@ route() {
         echo "Routing $route via $gateway"
         case route in
             default|*/0)
-                ip route replace default via "$gateway";;
+                sudo ip route replace default via "$gateway";;
             *)
-                ip route add "$route" via "$gateway";;
+                sudo ip route add "$route" via "$gateway";;
         esac
         shift
     done
@@ -276,18 +325,41 @@ write_statefile() {
     echo ")"                                >>"$filename"
 }
 
-
-check_root() {
-    [[ $(id -u) -eq 0 ]] || die "Must be root"
+check_dependencies(){
+    if ! which sudo >/dev/null;then
+        die "sudo is required"
+    else
+        if [ "$(sudo id -u)" -ne 0 ];then
+            die "Current user $(id -un) has no sudo privileges"
+        fi
+    fi
 }
 
+check_remote_user(){
+    remote_uid=$(${ssh_cmd} id -u)
+    if [ "$remote_uid" -eq 0 ];then
+        return 0
+    else
+        remote_uid=$(${ssh_cmd} sudo id -u)
+        if [ "$remote_uid" -eq 0 ];then
+            SUDO=1
+            return 0
+        fi
+    fi
+    die "Remote user is not root and has no sudo privileges"
+}
 
 die() {
     echo "$@" >&2
     exit 1
 }
 
-check_root
+exit_script(){
+    disconnect "$client_device"
+}
+
+check_dependencies
+check_remote_user
 mkdir -p "$STATE_DIR"
 do_args "$@"
 connect_$tunnel_type
