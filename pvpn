@@ -111,7 +111,8 @@ do_args() {
     ssh_host="$1"
     [[ -z "$ssh_host" ]] && die "Missing ssh-host, see 'pvpn --help'"
     shift
-
+    
+    ssh_cmd="ssh ${SSH_ARGS} ${ssh_host}"
     routes=("$@")
 
     # Fill in defaults
@@ -178,12 +179,11 @@ check_and_create_tun_interface(){
 connect_ssh_layer3() {
     if [ -z "$tun_devices" ];then
         device_pair=$(available_devicepair "$ssh_host" "tun")
-        devices="${client_device#tun}:${server_device#tun}"
+        
     else
         device_pair="$tun_devices"
-        devices="$tun_devices"
     fi
-
+    
     client_ip="${ip_pair%:*}"
     server_ip="${ip_pair#*:}"
     client_device="${device_pair%:*}"
@@ -216,8 +216,8 @@ sudo ip addr add ${server_ip}/32 peer ${client_ip} dev ${server_device};"
         -w "${ssh_devices}" "${ssh_host}" "${remote_setup_cmd}" || \
             die "ssh failed (exit code ${?})"
 
-    pid=$(ps ax -o"%p %a" | awk '$2 == "ssh" && /ip link set '$server_device' up/ {print $1}')
-    stop_cmd="kill $pid"
+    pid=$(ps ax -o"%p %a" | awk '$2 == "ssh" && /ip link set '${server_device}' up/ {print $1}')
+    stop_cmd="kill ${pid}"
 
     # FIXME: -oExitOnForwardFailure and -f doesn't seem to play along as
     # nicely as the docs say. Wait a second and fail on the step below instead
@@ -278,7 +278,7 @@ route() {
 
     while [[ "$#" -gt 0 ]]; do
         route="$1"
-        echo "Routing $route via $gateway"
+        echo "Routing ${route} via ${gateway}"
         case route in
             default|*/0)
                 sudo ip route replace default via "$gateway";;
@@ -295,8 +295,8 @@ dns() {
         return
     fi
 
-    cp /etc/resolv.conf     "$STATE_DIR/.$client_device.pre.resolv.conf"
-    stop_cmd="$stop_cmd; mv '$STATE_DIR/.$client_device.pre.resolv.conf' /etc/resolv.conf"
+    cp /etc/resolv.conf "${STATE_DIR}/.${client_device}.pre.resolv.conf"
+    stop_cmd="${stop_cmd}; mv '${STATE_DIR}/.${client_device}.pre.resolv.conf' /etc/resolv.conf"
 
     scp -q "$ssh_host":/etc/resolv.conf /etc/resolv.conf
 }
@@ -309,12 +309,12 @@ available_devicepair() {
     case "$device_type" in
         tun|tap) :;;
         "") die "available_devicepair(): Missing device_type";;
-        *)  die "available_devicepair(): Bad device_type '$device_type'";;
+        *)  die "available_devicepair(): Bad device_type '${device_type}'";;
     esac
 
     cmd_available_tun_device="echo ${device_type}{0..255} | tr ' ' '\n' | shuf | grep -v -f <(ip tuntap 2>/dev/null | cut -d: -f1) | head -n1"
     client_tun_device="$(eval $cmd_available_tun_device)"
-    server_tun_device="$(ssh "${SSH_ARGS}" "$ssh_host" $cmd_available_tun_device)"
+    server_tun_device="$(${ssh_cmd} $cmd_available_tun_device)"
     
     echo "$client_tun_device:$server_tun_device"
 }
@@ -326,17 +326,17 @@ write_statefile() {
     mkdir -p "$(dirname "$filename")"
 
     : >"$filename"
-    echo "ssh_host=\"$ssh_host\""           >>"$filename"
-    echo "ssh_ip=\"$ssh_ip\""               >>"$filename"
-    echo "stop_cmd=\"$stop_cmd\""           >>"$filename"
-    echo "tunnel_type=\"$tunnel_type\""     >>"$filename"
-    echo "inherit_dns=\"$inherit_dns\""     >>"$filename"
-    echo "ip_pair=\"$ip_pair\""             >>"$filename"
-    echo "client_device=\"$client_device\"" >>"$filename"
-    echo "server_device=\"$server_device\"" >>"$filename"
+    echo "ssh_host=\"${ssh_host}\""           >>"$filename"
+    echo "ssh_ip=\"${ssh_ip}\""               >>"$filename"
+    echo "stop_cmd=\"${stop_cmd}\""           >>"$filename"
+    echo "tunnel_type=\"${tunnel_type}\""     >>"$filename"
+    echo "inherit_dns=\"${inherit_dns}\""     >>"$filename"
+    echo "ip_pair=\"${ip_pair}\""             >>"$filename"
+    echo "client_device=\"${client_device}\"" >>"$filename"
+    echo "server_device=\"${server_device}\"" >>"$filename"
     echo "routes=("                         >>"$filename"
         for r in "${routes[@]}"; do
-            echo "\"$r\""                   >>"$filename"
+            echo "\"${r}\""                   >>"$filename"
         done
     echo ")"                                >>"$filename"
 }
